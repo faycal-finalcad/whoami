@@ -1,0 +1,112 @@
+version: 2.1
+orbs:
+  k8s: circleci/kubernetes@0.7.0
+commands:
+  git_checkout_from_cache:
+    description: "Git checkout and save cache"
+    steps:
+      - restore_cache:
+          keys:
+            - source-v1-{{ .Branch }}-{{ .Revision }}
+            - source-v1-{{ .Branch }}-
+            - source-v1-
+      - run:
+          name: Fetch git tags
+          command: |
+            mkdir -p ~/.ssh
+            echo 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCxHgix9ewnWWzA70WafU4j6ci9V3qDkEaglPCmLH5s6YXyVxtgX37w2hyjUOgOKVaSunqQ3UbjoBlBPi/uUOWDapFe+r8u8WZMcfhJIDDubUOqKUGs3/FNowbrkO3IGSmN4MEVogqAV99CJNbTFuPkI6HWquZDNjwYwdf9i0xjX+f+DLVqwYRAGtRHhZPQvx5teJIVZxQ+utsEnjJTWcaZ4MJWSc1mvYsAEBBSiUErVmtBdDfsDSZuwUzYUuGsWSYZXAa06mkqcS/Jj0y5NxGmNZJtm7HR4jp5PBTGiobcvbz10adecf9dYQhVWQ7hJTxfrsa5P+Dm1C2+mdrSKXdX/IdibRpoYkXJYi5IkHHwOU+hOlr0ueTeFnf6fDW62FxuGpmaYvsjxr5UpUJdd8q8fkyIWjD++etOB4nICOI/RDrRLE1eUT40bBmkAzBPWN2uhytubv6MfSNjXOfEcRJXNfPm+1JdHCN5v2DHNIWXe+Fop3iBm4JBnU/hFzKI5AOK9mcimnzT+d+IjLofK2pUXjCTMYUlD+5HUJxY7mM9+MbPf9dfFxEOWJQW2SkaaXzJVwl0+BwfebvWPL230v6TutXby6bYZHl0cnrctrmrdu68oG/MGEwsMD/E7R2ry2VlHbu5YAPg3NalMY286rMUuL5wv4CeWAazQisSnUwzuQ== faycal.zouaoui@finalcad.com' >> ~/.ssh/known_hosts
+            # Fetch tags if git cache is present
+            if [ -e /home/circleci/project/.git ]
+            then
+              git fetch origin --tags
+            fi
+      - checkout
+      - run:
+          name: Compress git objects
+          command: git gc
+      - save_cache:
+          key: source-v1-{{ .Branch }}-{{ .Revision }}
+          paths:
+            - ".git"
+release_image:
+    description: "Build image for release target and push to registry"
+    parameters:
+      target:
+        type: string
+        default: "staging"
+    steps:
+      - run:
+          name: Building for << parameters.target >>
+          command: | 
+            echo "Building image"
+            echo "Pushing image"
+k8s_deploy:
+    description: "Deploy to k8s cluster"
+    parameters:
+      k8s_svc_name:
+        type: string
+        default: "staging-whoami"
+    steps:
+      - k8s/install-kubectl
+      - run:
+          name: Deploying to k8s cluster for service << parameters.k8s_svc_name >>
+          command: |
+            echo $CA_CRT | base64 --decode > ca.crt
+            kubectl --server=${KUBE_SERVER} --certificate-authority=ca.crt --token=$SERVICEACCOUNT_TOKEN set image deployment/<< parameters.k8s_svc_name >> << parameters.k8s_svc_name >>=${DOCKER_IMAGE_LOCATION}:${CIRCLE_TAG}
+jobs:
+  build_push:
+    docker:
+      - image: circleci/node:9.8.0-stretch
+    steps:
+      - git_checkout_from_cache
+      - release_image
+deploy_staging:
+    docker:
+      - image: circleci/node:9.8.0-stretch
+    steps:
+      - k8s_deploy
+deploy_production:
+    docker:
+      - image: circleci/node:9.8.0-stretch
+    steps:
+      - k8s_deploy:
+          k8s_svc_name: "production-whoami"
+workflows:
+  build_and_push_master:
+    jobs:
+      - build_push:
+          filters:
+            branches:
+              only: /^master/
+tagged_release_staging:
+    jobs:
+      - build_push:
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^staging.*/
+      - deploy_staging:
+          requires:
+            - build_push
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^staging.*/
+tagged_release_production:
+    jobs:
+      - build_push:
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^production.*/
+      - deploy_production:
+          requires:
+            - build_push
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^production.*/
